@@ -1,0 +1,21 @@
+# Render Blueprint — myvideoto yt-api (YouTube download backend)
+# Repo root render.yaml; code lives in yt-api/
+services:
+  - type: web
+    name: myvideoto-yt-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r yt-api/requirements.txt
+    startCommand: cd yt-api && uvicorn app:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /
+    envVars:
+      - key: STREAM_SECRET
+        generateValue: true
+      - key: RATE_LIMIT_PER_MIN
+        value: "10"
+      - key: MAX_CONCURRENT_DOWNLOADS
+        value: "2"
+      - key: MAX_DURATION_SECONDS
+        value: "7200"
+      - key: MAX_FILESIZE_BYTES
+        value: "524288000"

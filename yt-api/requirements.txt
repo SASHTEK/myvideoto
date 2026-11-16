@@ -1,0 +1,5 @@
+# myvideoto yt-api — pinned direct dependencies
+yt-dlp==2026.10.26
+fastapi==0.163.1
+uvicorn[standard]==0.54.0
+pydantic==2.14.3

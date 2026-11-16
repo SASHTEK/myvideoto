@@ -1,0 +1,11 @@
+services:
+  cobalt:
+    image: ghcr.io/imputnet/cobalt:latest
+    ports:
+      - "9000:9000"
+    environment:
+      - PORT=9000
+      - API_URL=http://localhost:9000
+      - API_NAME=myvideoto-local
+      - CORS_WILDCARD=1
+    restart: unless-stopped
