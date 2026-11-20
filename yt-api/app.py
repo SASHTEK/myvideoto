@@ -226,8 +226,11 @@ def _base_opts() -> dict[str, Any]:
 
 
 # YouTube bot-checks datacenter IPs with "Sign in to confirm you're not a bot"
-# on the default web client. These alternate InnerTube clients are exempt.
-SIGNIN_FALLBACK_CLIENTS = ["tv", "android_vr", "mweb"]
+# on the default web/visionos clients. `android` is the one InnerTube client
+# that both avoids the bot-check and still serves downloadable formats for
+# bot-checked videos (verified: only android/android_vr/visionos yield formats
+# for such videos; the rest are PO-token-skipped).
+SIGNIN_FALLBACK_CLIENTS = ["android", "visionos", "android_vr"]
 
 
 def extract_with_fallback(url: str, opts: dict[str, Any], download: bool) -> dict[str, Any]:
