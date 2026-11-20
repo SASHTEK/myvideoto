@@ -75,19 +75,33 @@ app = FastAPI(title="myvideoto yt-api", docs_url=None, redoc_url=None, openapi_u
 
 
 class ApiError(Exception):
-    def __init__(self, code: str, status: int = 400):
+    def __init__(self, code: str, status: int = 400, detail: str | None = None):
         super().__init__(code)
         self.code = code
         self.status = status
+        self.detail = detail
 
 
-def error_response(code: str, status: int) -> JSONResponse:
-    return JSONResponse({"status": "error", "error": {"code": code}}, status_code=status)
+def _sanitize_detail(raw: Any, limit: int = 300) -> str | None:
+    """Bounded, control-char-stripped upstream message for diagnostics."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    text = re.sub(r"\s+", " ", raw).strip()
+    text = "".join(ch for ch in text if ch.isprintable())
+    return text[:limit] or None
+
+
+def error_response(code: str, status: int, detail: str | None = None) -> JSONResponse:
+    err: dict[str, Any] = {"code": code}
+    clean = _sanitize_detail(detail)
+    if clean:
+        err["detail"] = clean
+    return JSONResponse({"status": "error", "error": err}, status_code=status)
 
 
 @app.exception_handler(ApiError)
 async def _api_error(_request: Request, exc: ApiError) -> JSONResponse:
-    return error_response(exc.code, exc.status)
+    return error_response(exc.code, exc.status, exc.detail)
 
 
 @app.exception_handler(Exception)
@@ -213,19 +227,23 @@ def _base_opts() -> dict[str, Any]:
 
 def map_download_error(exc: Exception) -> ApiError:
     msg = str(exc).lower()
+    raw = str(exc)
     if "larger than max-filesize" in msg or "filesize" in msg and "larger" in msg:
-        return ApiError("yt.too_large", 413)
+        return ApiError("yt.too_large", 413, raw)
     if "private video" in msg:
-        return ApiError("yt.private", 403)
-    if any(s in msg for s in ("sign in", "confirm you", "age-restricted", "age restricted", "log in")):
-        return ApiError("yt.restricted", 403)
+        return ApiError("yt.private", 403, raw)
+    if "sign in to confirm" in msg or "confirm you" in msg:
+        # YouTube bot-check (common for datacenter IPs) — not a real age restriction
+        return ApiError("yt.signin_required", 403, raw)
+    if any(s in msg for s in ("age-restricted", "age restricted", "log in to confirm your age")):
+        return ApiError("yt.restricted", 403, raw)
     if "unsupported url" in msg or "not a valid url" in msg:
-        return ApiError("yt.invalid_url", 400)
+        return ApiError("yt.invalid_url", 400, raw)
     if any(s in msg for s in ("timed out", "timeout", "network", "connection", "temporary failure")):
-        return ApiError("yt.upstream_unreachable", 502)
+        return ApiError("yt.upstream_unreachable", 502, raw)
     if "video unavailable" in msg or "not available" in msg or "removed" in msg:
-        return ApiError("yt.unavailable", 404)
-    return ApiError("yt.extraction_failed", 502)
+        return ApiError("yt.unavailable", 404, raw)
+    return ApiError("yt.extraction_failed", 502, raw)
 
 
 def format_for(quality: str) -> str:

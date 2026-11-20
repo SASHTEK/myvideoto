@@ -28,6 +28,7 @@ export interface CobaltResponse {
   error?: {
     code: string
     message?: string
+    detail?: string // bounded upstream (yt-dlp) message — diagnostics/fallback only
   }
 }
 
@@ -40,6 +41,8 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   "yt.private": "This video is private and can't be downloaded.",
   "yt.restricted":
     "This video is age-restricted or requires sign-in, so it can't be downloaded.",
+  "yt.signin_required":
+    "YouTube is asking for a sign-in check on this video (common for some videos). Please try again in a moment, or try a different video.",
   "yt.unavailable": "This video is unavailable or has been removed.",
   "yt.too_long": "Videos longer than 2 hours aren't supported.",
   "yt.too_large": "This video is too large to download. Try a lower quality.",
@@ -166,7 +169,8 @@ export async function downloadVideo(options: DownloadOptions): Promise<string> {
   if (!response.ok) {
     const err = data?.error
     if (err && typeof err === "object") {
-      throw new Error(friendly(err.code, err.message))
+      if (err.detail) console.warn("[yt-api]", err.code, err.detail)
+      throw new Error(friendly(err.code, err.message ?? err.detail))
     }
     // legacy worker shape: { error: "some string" }
     const legacy = (data as unknown as { error?: unknown })?.error
@@ -181,7 +185,9 @@ export async function downloadVideo(options: DownloadOptions): Promise<string> {
   }
 
   if (data.status === "error") {
-    throw new Error(friendly(data.error?.code, data.error?.message))
+    const e = data.error
+    if (e?.detail) console.warn("[yt-api]", e.code, e.detail)
+    throw new Error(friendly(e?.code, e?.message ?? e?.detail))
   }
 
   const downloadUrl = data.data?.url || data.url
