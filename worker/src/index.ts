@@ -204,50 +204,85 @@ export default {
       return errorResponse(503, isYouTube ? "youtube_backend_not_configured" : "cobalt_backend_not_configured", origin)
     }
 
-    let upstream: Response
-    try {
-      upstream = await fetch(backend, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify({
-          url: body.url,
-          downloadMode: "auto",
-          filenameStyle: "pretty",
-          videoQuality: quality,
-        }),
-        signal: AbortSignal.timeout(120_000),
-      })
-    } catch (err) {
-      if (err instanceof Error && err.name === "TimeoutError") {
-        return errorResponse(504, "upstream_timeout", origin)
+    // Free-tier backends sleep when idle; the gateway answers 502/503/504 with a
+    // non-JSON body while the instance wakes. Retry idempotent POSTs through that.
+    const RETRY_DELAYS_MS = [5_000, 10_000, 20_000]
+    const RETRYABLE_STATUS = new Set([502, 503, 504])
+    const MAX_ATTEMPTS = 4
+
+    let upStatus = 0
+    let upData: unknown = null
+    let resolved = false
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (attempt > 0) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt - 1]))
       }
-      console.error("upstream fetch failed:", err instanceof Error ? err.message : String(err))
-      return errorResponse(502, "upstream_unreachable", origin)
-    }
 
-    const text = await upstream.text()
-    let data: unknown = null
-    try {
-      data = JSON.parse(text)
-    } catch {
-      data = null
-    }
-
-    if (!upstream.ok) {
-      // pass through structured upstream errors (cobalt / yt-api shape)
-      if (data && typeof data === "object") {
-        return jsonResponse(upstream.status, data, origin)
+      let resp: Response
+      try {
+        resp = await fetch(backend, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+          body: JSON.stringify({
+            url: body.url,
+            downloadMode: "auto",
+            filenameStyle: "pretty",
+            videoQuality: quality,
+          }),
+          signal: AbortSignal.timeout(60_000),
+        })
+      } catch (err) {
+        if (attempt < MAX_ATTEMPTS - 1) continue // transient network/timeout — retry
+        if (err instanceof Error && err.name === "TimeoutError") {
+          return errorResponse(504, "upstream_timeout", origin)
+        }
+        console.error("upstream fetch failed:", err instanceof Error ? err.message : String(err))
+        return errorResponse(502, "upstream_unreachable", origin)
       }
-      return errorResponse(upstream.status, "upstream_error", origin)
+
+      upStatus = resp.status
+      const text = await resp.text()
+      try {
+        upData = JSON.parse(text)
+      } catch {
+        upData = null
+      }
+
+      if (upData !== null && typeof upData === "object") {
+        resolved = true // structured response (success or structured error)
+        break
+      }
+      // non-JSON body — likely the gateway erroring while the instance wakes up
+      if (RETRYABLE_STATUS.has(upStatus) && attempt < MAX_ATTEMPTS - 1) {
+        continue
+      }
+      resolved = true
+      break
     }
 
-    if (data === null || typeof data !== "object") {
+    if (!resolved) {
+      return errorResponse(504, "upstream_waking", origin)
+    }
+
+    if (upData !== null && typeof upData === "object") {
+      return jsonResponse(upStatus >= 200 && upStatus < 300 ? 200 : upStatus, upData, origin)
+    }
+
+    // non-JSON upstream body
+    if (upStatus === 429) {
+      return errorResponse(429, "rate_limited", origin)
+    }
+    if (RETRYABLE_STATUS.has(upStatus)) {
+      // retries exhausted on gateway errors: the instance is still waking up
+      return errorResponse(504, "upstream_waking", origin)
+    }
+    if (upStatus >= 200 && upStatus < 300) {
       return errorResponse(502, "upstream_invalid_response", origin)
     }
-
-    return jsonResponse(200, data, origin)
+    return errorResponse(upStatus, "upstream_error", origin)
   },
 }

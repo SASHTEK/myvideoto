@@ -62,6 +62,8 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   "origin_not_allowed": "This request isn't allowed from your browser.",
   "upstream_timeout":
     "The download server took too long to respond (it may be waking up). Please try again in a minute.",
+  "upstream_waking":
+    "The download server is waking up (it sleeps when idle). Please try again in a moment.",
   "upstream_unreachable": "Can't reach the download server right now. Please try again later.",
   "upstream_invalid_response":
     "The download server returned an unexpected response. Please try again later.",
