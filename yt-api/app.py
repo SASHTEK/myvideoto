@@ -225,6 +225,32 @@ def _base_opts() -> dict[str, Any]:
     }
 
 
+# YouTube bot-checks datacenter IPs with "Sign in to confirm you're not a bot"
+# on the default web client. These alternate InnerTube clients are exempt.
+SIGNIN_FALLBACK_CLIENTS = ["tv", "android_vr", "mweb"]
+
+
+def extract_with_fallback(url: str, opts: dict[str, Any], download: bool) -> dict[str, Any]:
+    """extract_info with one retry using alternate player clients on bot-check."""
+    attempts = [opts]
+    fb = dict(opts)
+    fb["extractor_args"] = {"youtube": {"player_client": SIGNIN_FALLBACK_CLIENTS}}
+    attempts.append(fb)
+
+    last_signin: ApiError | None = None
+    for i, o in enumerate(attempts):
+        try:
+            with yt_dlp.YoutubeDL(o) as ydl:
+                return ydl.extract_info(url, download=download)
+        except yt_dlp.utils.DownloadError as e:
+            err = map_download_error(e)
+            if err.code == "yt.signin_required" and i < len(attempts) - 1:
+                last_signin = err
+                continue
+            raise err
+    raise last_signin or ApiError("yt.extraction_failed", 502)
+
+
 def map_download_error(exc: Exception) -> ApiError:
     msg = str(exc).lower()
     raw = str(exc)
@@ -241,7 +267,7 @@ def map_download_error(exc: Exception) -> ApiError:
         return ApiError("yt.invalid_url", 400, raw)
     if any(s in msg for s in ("timed out", "timeout", "network", "connection", "temporary failure")):
         return ApiError("yt.upstream_unreachable", 502, raw)
-    if "video unavailable" in msg or "not available" in msg or "removed" in msg:
+    if any(s in msg for s in ("video unavailable", "is unavailable", "not available", "removed")):
         return ApiError("yt.unavailable", 404, raw)
     return ApiError("yt.extraction_failed", 502, raw)
 
@@ -282,11 +308,7 @@ def extract_light(url: str) -> dict[str, Any]:
         if hit and hit[0] > now:
             return hit[1]
 
-    with yt_dlp.YoutubeDL(_base_opts()) as ydl:
-        try:
-            info = ydl.extract_info(url, download=False)
-        except yt_dlp.utils.DownloadError as e:
-            raise map_download_error(e)
+    info = extract_with_fallback(url, _base_opts(), download=False)
     if not info:
         raise ApiError("yt.extraction_failed", 502)
     if info.get("_type") in ("playlist", "multi_video"):
@@ -426,8 +448,7 @@ def stream(token: str) -> FileResponse:
         if HAS_FFMPEG:
             opts["merge_output_format"] = "mp4"
 
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
+        info = extract_with_fallback(url, opts, download=True)
 
         if info.get("_type") in ("playlist", "multi_video"):
             entries = info.get("entries") or []
