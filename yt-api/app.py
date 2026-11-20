@@ -233,12 +233,13 @@ def _base_opts() -> dict[str, Any]:
 SIGNIN_FALLBACK_CLIENTS = ["android", "visionos", "android_vr"]
 
 
-def extract_with_fallback(url: str, opts: dict[str, Any], download: bool) -> dict[str, Any]:
+def extract_with_fallback(url: str, opts: dict[str, Any], download: bool, allow_retry: bool = True) -> dict[str, Any]:
     """extract_info with one retry using alternate player clients on bot-check."""
     attempts = [opts]
-    fb = dict(opts)
-    fb["extractor_args"] = {"youtube": {"player_client": SIGNIN_FALLBACK_CLIENTS}}
-    attempts.append(fb)
+    if allow_retry:
+        fb = dict(opts)
+        fb["extractor_args"] = {"youtube": {"player_client": SIGNIN_FALLBACK_CLIENTS}}
+        attempts.append(fb)
 
     last_signin: ApiError | None = None
     for i, o in enumerate(attempts):
@@ -304,14 +305,22 @@ _extract_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _CACHE_TTL = 300.0
 
 
-def extract_light(url: str) -> dict[str, Any]:
+def extract_light(url: str, client: str | None = None) -> dict[str, Any]:
     now = time.time()
-    with _cache_lock:
-        hit = _extract_cache.get(url)
-        if hit and hit[0] > now:
-            return hit[1]
+    if client is None:  # diagnostic requests bypass/serve outside the cache
+        with _cache_lock:
+            hit = _extract_cache.get(url)
+            if hit and hit[0] > now:
+                return hit[1]
 
-    info = extract_with_fallback(url, _base_opts(), download=False)
+    opts = _base_opts()
+    if client:
+        if client not in PLAYER_CLIENTS:
+            raise ApiError("yt.invalid_client", 400)
+        opts["extractor_args"] = {"youtube": {"player_client": [client]}}
+        info = extract_with_fallback(url, opts, download=False, allow_retry=False)
+    else:
+        info = extract_with_fallback(url, opts, download=False)
     if not info:
         raise ApiError("yt.extraction_failed", 502)
     if info.get("_type") in ("playlist", "multi_video"):
@@ -380,6 +389,21 @@ class DownloadRequest(BaseModel):
     videoQuality: str | None = None
     downloadMode: str | None = None  # accepted for cobalt compatibility, ignored
     filenameStyle: str | None = None  # accepted for cobalt compatibility, ignored
+    # diagnostics: force a single InnerTube player client (allowlisted) to
+    # isolate which clients YouTube bot-checks from this host's IP
+    client: str | None = None
+
+
+# names accepted by the `client` diagnostic field
+PLAYER_CLIENTS = frozenset(
+    {
+        "web", "web_safari", "web_embedded", "web_music", "web_creator",
+        "android", "android_vr", "ios", "visionos", "mweb",
+        "tv", "tv_downgraded", "tv_samsung", "tv_simply",
+    }
+)
+
+BUILD_REV = "r5-android-fallback"
 
 
 @app.get("/")
@@ -390,6 +414,8 @@ def health() -> dict[str, Any]:
         "ffmpeg": HAS_FFMPEG,
         "maxConcurrent": MAX_CONCURRENT,
         "rateLimitPerMin": RATE_LIMIT_PER_MIN,
+        "build": BUILD_REV,
+        "signinFallback": list(SIGNIN_FALLBACK_CLIENTS),
     }
 
 
@@ -406,7 +432,7 @@ def create_download(req: DownloadRequest, request: Request) -> dict[str, Any]:
     if quality not in ALLOWED_QUALITIES:
         quality = "max"
 
-    info = extract_light(url)
+    info = extract_light(url, client=req.client)
     duration = info.get("duration")
     if duration and float(duration) > MAX_DURATION_SECONDS:
         raise ApiError("yt.too_long", 413)
